@@ -1,0 +1,305 @@
+---
+title: "DREAM-SHSI Simulation - Propensity Scores"
+author: "Kenny Mai"
+date: "12/8/2020"
+output: pdf_document
+---
+
+### 1) Simulation Context
+  In New York City(NYC), the Department of Education(DOE) funds a free Saturday and summer academic program called DREAM-SHSI that prepares enrolled seventh graders in the NYC public school system to take the Specialized High Schools Admissions Test (SHSAT) in the eighth grade. Students must meet the following criteria to be eligible to apply for the program: be a NYC resident, be enrolled in seventh grade in a DOE public or charter school, and score a minimum of 3.2 on their grade six English Language Arts NY State test and minimum of 4.0 on their grade six Mathematics NY State test. 
+  Students must also either meet certain income requirements or live in specific districts specified by the DOE. The sample data to be generated will be of NYC eighth graders who take the SHSAT. In real life, this number is about 27500 students, of which about 2300 were in the DREAM program. For simplicity, students who are accepted into the program but do not commit to the program will not be included. 
+
+The response variable will be SHSAT composite scores. The five covariates will be: gender, ethnicity, birthplace, Grade 6 ELA State Test score, and Grade 6 Math State Test score. The research question is: does being accepted and committing to the DREAM program have an effect on a students SHSAT score?
+
+### 2) Data Generating Process
+1000 observations will be generated, with 100 eighth graders in the treatment group and 900 eighth graders in the control group.
+
+Students will have 5 covariates:
+Gender: Schools in NYC have slightly more boys than girls, about 51/49 split in favor of boys.
+0 - Female
+1 - Male
+
+
+Ethnicity: For simplicity, data will be simulated with 5 ethnic categories, ordered by achievement gap. 
+1 - Black
+2 - Hispanic
+3 - Other/Unknown/Unspecified
+4 - White, not of Hispanic Origin
+5 - Asian
+
+Birthplace: For simplicity, data will be simulated as binary, either born in the U.S., or not.
+0 - Not born in the U.S.
+1 - Born in the U.S.
+
+G6ELA: Grade 6 ELA NY State test scale score.
+Range: 500 - 650, median at 600
+
+G6MATH: Grade 6 Mathematics NY State test scale score.
+Range: 500 - 650, median at 600
+
+  Students will have the potential outcomes of scaled SHSAT composite scores ranging theoretically between 200 and 800. The expected treatment effect should be 50, and the residual standard deviation of the composite scores should be 30. For analysis, we'll create three worlds, A, B, and C.
+  In World A, potential outcomes will assume a linear model for E[Y(0)|X] and E[Y(1)|X]. Two datasets will be generated, fullA (containing all covariates and both potential outcomes) and obsA (containing all covariates but only the observed outcome).
+    In World B, the response surface E[Y(1)|X] will be non-linear (in this case, square root). Two datasets will be generated, fullB and obsB, similar to World A. 
+    World C will have the same response surface as World B, but the ignorability assumption will be violated. Two datasets will be generated, fullC and obsC, similar to Worlds A and B. This dataset will have an additional covariate that was missing from Worlds A and B, tutoring.
+
+Tutoring: Binary indicator for whether or not the student receives tutoring outside of the DREAM program.
+0 - Does not receive outside tutoring
+1 - Does receive outside tutoring
+
+### 3) Assumptions
+To yield a valid causal estimate for the estimand of the average treatment on the treated using propensity scores, the following assumptions must be satisfied:
+
+Ignoribility: All confounders are assumed to have been measured. The way that a propensity score is generated is that it is a single number representing all the covariates in order to draw similarities between different observations. If this assumption holds, matching observations with similar covariate values should yield an unbiased treatment effect estimate. For the data to be generated, this would mean that we assume that the covariates of gender, ethnicity, birthplace, pretest ELA score, and pretest Math score are the only confounders on the outcome, SHSAT scaled composite score.
+
+SUTVA: Stable unit treatment values must be assumed. There should be no effect across observations, meaning that the treatment of a single observation should not effect the outcome of another in the data. 
+
+Overlap: Treatment and control groups must have sufficient overlap. If this assumption doesn't hold, inference must be restricted to only areas of overlap, or rely on another model to infer on areas outside overlap.
+
+Balance: The predictors should be similar across treatment and control groups. If imbalanced, the analysis would have to rely on the correctness of the model used.
+
+
+### 4) R Code for Data Generating
+
+```{r, message=FALSE}
+library(arm)
+library(ggplot2)
+```
+
+```{r}
+# Generate treatment assignment and covariates.
+set.seed(0)
+# 100 treated, 900 control.
+treatment   <- c(rep(1,100),rep(0,900))
+# NYC schools are roughly 51/49 split between boys and girls.
+gender      <- rbinom(1000,1,0.51)
+# Probability vector for ethnicity comes from NYC demographics in 2019.
+ethnic      <- c(sample(c(1:6),1000,replace=T,prob=c(0.007,0.162,0.255,0.406,0.151,0.02)))
+# Probability of being foreign born, if not white.
+birthplace  <- ifelse(ethnic!=5,rbinom(sum(ethnic!=4),1,0.87),1)
+# Grade 6 English Language Arts score, foreign born students assumed overall lower score
+g6ela       <- round(ifelse(birthplace==1,rnorm(sum(birthplace==1),600,15),rnorm(sum(birthplace==0),500,100)))
+g6ela       <- ifelse(g6ela>650,650,g6ela)
+# Grade 6 Mathematics score
+g6math      <- round(rnorm(1000,600,15))
+g6math      <- ifelse(g6math>650,650,g6math)
+# Probability the student is taking tutoring outside of the treatment
+tutor       <- ifelse(ethnic>=4,rbinom(sum(ethnic>=4),1,0.5),rbinom(sum(ethnic<4),1,0.1))
+# Store treatment assignment and covariates
+covtrt      <- data.frame(treatment=treatment,gender=gender,ethnic=ethnic,birthplace=birthplace,g6ela=g6ela,g6math=g6math)
+head(covtrt)
+```
+
+```{r}
+# World A, both linear models
+set.seed(0)
+# Girls outperform boys at all levels in middle school about 6.3%.  
+# Effects of ethnicity are based on achievement gaps in proficiency rates across NY State.
+y_0a  <- round(-35*gender + 40*ethnic + 30*birthplace + 0.3*g6ela + 0.3*g6math + rnorm(1000, mean = 0, sd = 30))
+# Adding treatment effect.
+y_1a  <- round(y_0a + rnorm(1000, mean = 50, sd = 1))
+# Making sure no scores are above the highest possible score.
+y_1a[y_1a > 800] = 800
+# Quick sanity check
+summary(y_0a)
+summary(y_1a)
+mean(y_1a - y_0a)
+# Create World A datasets
+fullA   <- data.frame(y_0a=y_0a,y_1a=y_1a,treatment=treatment,gender=gender,ethnic=ethnic,birthplace=birthplace,g6ela=g6ela,g6math=g6math)
+y_a     <- ifelse(treatment==1,y_1a,y_0a)
+obsA    <- data.frame(y_a=y_a,treatment=treatment,gender=gender,ethnic=ethnic,birthplace=birthplace,g6ela=g6ela,g6math=g6math)
+```
+
+```{r}
+# World B, both non-linear models
+set.seed(1)
+# Girls outperform boys at all levels in middle school about 6.3%.  
+# Effects of ethnicity are based on achievement gaps in proficiency rates across NY State.
+y_0b  <- round(-35*gender + 40*ethnic + 30*birthplace + 2*sqrt(g6ela) + 2*sqrt(g6math) + rnorm(1000, mean = 250, sd = 30))
+# Adding treatment effect.
+y_1b  <- round(y_0b + rnorm(1000, mean = 50, sd = 1))
+# Making sure no scores are above the highest possible score.
+y_1b[y_1b > 800] = 800
+# Quick sanity check
+summary(y_0b)
+summary(y_1b)
+mean(y_1b - y_0b)
+# Create World A datasets
+fullB   <- data.frame(y_0b=y_0b,y_1b=y_1b,treatment=treatment,gender=gender,ethnic=ethnic,birthplace=birthplace,g6ela=g6ela,g6math=g6math)
+y_b     <- ifelse(treatment==1,y_1b,y_0b)
+obsB    <- data.frame(y_b=y_b,treatment=treatment,gender=gender,ethnic=ethnic,birthplace=birthplace,g6ela=g6ela,g6math=g6math)
+```
+
+```{r}
+# World C, both non-linear models, but with another confounding covariate
+set.seed(2)
+# Girls outperform boys at all levels in middle school about 6.3%.  
+# Effects of ethnicity are based on achievement gaps in proficiency rates across NY State.
+y_0c  <- round(-35*gender + 40*ethnic + 30*birthplace + 2*sqrt(g6ela) + 2*sqrt(g6math) + rnorm(1000, mean = 250, sd = 30)) + 50*tutor
+# Adding treatment effect.
+y_1c  <- round(y_0c + rnorm(1000, mean = 50, sd = 1))
+# Making sure no scores are above the highest possible score.
+y_1c[y_1c > 800] = 800
+# Quick sanity check
+summary(y_0c)
+summary(y_1c)
+mean(y_1c - y_0c)
+# Create World A datasets
+fullC   <- data.frame(y_0c=y_0c,y_1c=y_1c,treatment=treatment,gender=gender,ethnic=ethnic,birthplace=birthplace,g6ela=g6ela,g6math=g6math,tutor=tutor)
+y_c     <- ifelse(treatment==1,y_1c,y_0c)
+obsC    <- data.frame(y_c=y_c,treatment=treatment,gender=gender,ethnic=ethnic,birthplace=birthplace,g6ela=g6ela,g6math=g6math,tutor=tutor)
+```
+
+### 5) Methods and Estimand
+Two methods will be used to find the estimand, the average treatment on the treated (ATT):
+Linear regression and propensity score matching.
+ 
+Linear Regression:
+- Fit linear model onto the covariates and call the estimate for the treatment effect.
+
+Propensity Score Matching:
+- Select covariates to be included in the model.
+- Use logistic regression to obtained propensity scores.
+- Restructure the data using k-1 with replacement weights
+- Match with replacement using one-to-one nearest neighbor matching on propensity scores. Using the arm package, call the "cnts" variable in the output to create a weight variable.
+- Apply the IPTW to re-weight the control group to look closer to the treatment group.
+- Check overlap and balance, and rebalance if needed. Overlap checking ensures sufficient common support between treatment and control group, so that a match can be made between control and treatment such that they can be treated as counterfactuals of each other. Balancing is necessary to ensure no variables are more biased than others.
+- Estimate average treatment effect on the weighted and balanced dataset.
+
+```{r}
+# Method 1: Linear regression with all covariates
+lm.a <- lm(y_a ~ ., data = obsA)
+summary(lm.a)
+lm.b <- lm(y_b ~ ., data = obsB)
+summary(lm.b)
+lm.c <- lm(y_c ~ .-tutor, data = obsC)
+summary(lm.c)
+```
+ 
+```{r}
+# Method 2: Propensity Score Matching
+# Logistic regression and k-1 with replacement matching
+glm.1           <- glm(treatment ~ ., data = covtrt, family = binomial(link = "logit"))
+pscores         <- data.frame(pscore = predict(glm.1, type = "response"), treatment = glm.1$model$treatment)
+match           <- matching(z = covtrt$treatment, score = pscores$pscore, replace = T)
+weights         <- data.frame(treatment = covtrt$treatment, weight = NA)
+weights$weight  <- ifelse(weights$treatment==1,1,match$cnts)
+# Quick sanity check
+table(weights)
+```
+
+```{r}
+# Checking overlap
+# Propensity scores
+ggplot(pscores,aes(x=pscore,colour=as.factor(treatment))) + 
+ geom_histogram(fill="white",alpha=0.5) +
+  labs(title="Pscore histogram plot",x="Propensity Score", y = "Count")
+# Grade 6 ELA
+ggplot(covtrt,aes(x=g6ela,colour=as.factor(treatment))) + 
+ geom_histogram(fill="white",alpha=0.5) +
+  labs(title="ELA Test score histogram plot",x="Score", y = "Count")
+# Grade 6 MATH
+ggplot(covtrt,aes(x=g6math,colour=as.factor(treatment))) + 
+ geom_histogram(fill="white",alpha=0.5) +
+  labs(title="Math Test score histogram plot",x="Score", y = "Count")
+```
+Overlap looks good; no areas of concern can be seen.
+
+```{r}
+# Check balance
+# Create function
+checkbalance <- function(data, covariates, weights){
+  treated <- data[data$treatment == 1, ]
+  control <- data[data$treatment == 0, ]
+      
+  treatedwts<- weights[weights$treatment == 1, "weight"]
+  controlwts<- weights[weights$treatment == 0, "weight"]
+  
+  # Make binary indicator on whether or not the covariate is binary.
+  bivar <- ifelse(sapply(covariates, function(x) length(unique(data[, x]))) == 2, 1, 0) 
+  weightedsd <- function(x, w) sqrt(sum(w*(x - weighted.mean(x, w))^2)/sum(w)) 
+  
+  # Find means    
+  mean1 <- sapply(covariates, function(x) mean(treated[, x]))
+  mean0 <- sapply(covariates, function(x) mean(control[, x]))
+       
+  mean1.m <- sapply(covariates, function(x) weighted.mean(treated[, x], treatedwts))
+  mean0.m <- sapply(covariates, function(x) weighted.mean(control[, x], controlwts))
+  
+  # Find differences
+  diff <- ifelse(bivar == 1, mean1-mean0, (mean1-mean0)/sapply(covariates, function(x) sd(treated[, x])))
+  diff.m <- ifelse(bivar == 1, mean1.m-mean0.m, (mean1.m-mean0.m)/sapply(covariates, function(x) sd(treated[, x])))
+  
+  # Find ratios     
+  ratio <- ifelse(bivar == 0, sapply(covariates, function(x) sd(control[, x])) / sapply(covariates, function(x) sd(treated[, x])), NA)
+  ratio.m <- ifelse(bivar == 0, sapply(covariates, function(x) weightedsd(control[, x], controlwts)) / sapply(covariates, function(x) weightedsd(treated[, x], treatedwts)), NA)
+  
+  # Construct final data frame output     
+  data.frame(mean1, mean0, mean1.m,mean0.m, diff, diff.m, ratio, ratio.m)
+}
+# Define covariates
+covnames <- c("gender", "ethnic","birthplace", "g6ela", "g6math")
+# Use function and round the numbers.
+balance <- round(checkbalance(obsA, covnames, weights), 2)
+balance
+```
+Means are close to 0, ratios are close to 1, balance seems good.
+
+```{r}
+# Estimate ATT
+reconstA <- cbind(obsA, pscores = pscores$pscore, weight = weights$weight)
+reconstB <- cbind(obsB, pscores = pscores$pscore, weight = weights$weight)
+reconstC <- cbind(obsC, pscores = pscores$pscore, weight = weights$weight)
+estA <- lm(y_a ~ treatment + weight, data = reconstA)
+estB <- lm(y_b ~ treatment + weight, data = reconstB)
+estC <- lm(y_c ~ treatment + weight, data = reconstC)
+summary(estA)
+summary(estB)
+summary(estC)
+```
+
+
+### 6) Results  
+The ATT and corresponding standard error are shown in the printed data frame:
+```{r}
+result <- data.frame(World = rep(c("A", "B", "C"), each = 3),
+                     Method = rep(c("Difference in Means", "Linear", "Logit and K1"), 3),
+                     TreatmentEffect = NA, 
+                     StandardDeviation = NA)
+# unmatched estimates
+result$TreatmentEffect[1] = diff(tapply(obsA$y_a, obsA$treatment, mean))
+result$TreatmentEffect[4] = diff(tapply(obsB$y_b, obsB$treatment, mean))
+result$TreatmentEffect[7] = diff(tapply(obsC$y_c, obsC$treatment, mean))
+# linear estimates and standard error
+result$TreatmentEffect[2] = coef(lm.a)["treatment"]
+result$TreatmentEffect[5] = coef(lm.b)["treatment"]
+result$TreatmentEffect[8] = coef(lm.c)["treatment"]
+result$StandardDeviation[2] = summary(lm.a)$coefficients["treatment","Std. Error"]
+result$StandardDeviation[5] = summary(lm.b)$coefficients["treatment","Std. Error"]
+result$StandardDeviation[8] = summary(lm.c)$coefficients["treatment","Std. Error"]
+# logit regression and k1 weights
+result$TreatmentEffect[3] = coef(estA)["treatment"]
+result$TreatmentEffect[6] = coef(estB)["treatment"]
+result$TreatmentEffect[9] = coef(estC)["treatment"]
+result$StandardDeviation[3] = summary(estA)$coefficients["treatment","Std. Error"]
+result$StandardDeviation[6] = summary(estB)$coefficients["treatment","Std. Error"]
+result$StandardDeviation[9] = summary(estC)$coefficients["treatment","Std. Error"]
+print(result)
+```
+  In World A, the outcomes are simulated from a linear model, so the estimated treatment effect is the closest to the true treatment effect out of the three worlds. 
+  In World B, the outcomes are not simnulated from a linear model, and linear regression is a less ideal choice than it would be for World A.
+  In World C, the estimate is also not as close to the true treatment effect, as the model is missing a key covariate, violating the assumption of ignorability.
+
+
+### 7) Discuss the Bias
+  The method of linear regression is only reliable if the relationship between the outcome and all the covariates are linear. Otherwise, using linear regression to estimate a causal effect will result in extrapolating a relationship over areas where there is no data. This will happen even if the data are linear, but the bias increases dramatically if the relationship is non-linear.
+  Propensity scores, however, reduce bias by reconstructing the samples in such a way that the effects of bias due to the covariates are balanced across the control and treatment groups via matching. In this case, there is sufficient overlap between the groups that the matching is reliable without needing to restrict the space. 
+  As the case in World C, regardless of whichever method is used, the validity of ignorability is important. Missing a covariate, or several, in the model can produce estimates of ATT that are much farther from the true effect.
+
+### 8) Conclusion  
+  The usage of linear regression to estimate causal effects is extremely limited, and relies on a variety of factors to make the estimate more accurate. In the real world, these factors rarely line up and even more rarely have easy relationships with all the covariates. Intersectionality and confounding variables are the norm, and as such, linear regression should be used with extreme caution.
+
+  Robust methods like propensity scores attempt to account for these infinite confounding relationships by using matching to pair similar observations as reliable counterfactuals of each other, presenting the opportunity to reconstruct a theoretical dataset that is capable of estimating causal effects.
+
+
+
+
